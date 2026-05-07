@@ -16,7 +16,7 @@ image = (
         "matplotlib",
         "seaborn",
         "scikit-learn",
-        "turboquant-pro",
+        "turboquant",       # base package exports TurboQuantProd (not turboquant-pro)
         "requests",
     )
 )
@@ -25,9 +25,9 @@ volume = modal.Volume.from_name("turboquant-netflix-results", create_if_missing=
 # --- Configuration ---
 K = 50          # Latent dimensions
 LAMBDA = 0.01   # Regularization strength
-BITS = [2, 3]   # TurboQuant bit-widths (integers)
+BITS = [2, 3]   # TurboQuant bit-widths (min 2 per TurboQuantProd assertion)
 T_VALS = [0, 0.5, 1, 2, 5]   # D-scaling skew levels
-M_SEEDS = 10    # Seeds for TurboQuant variance estimation
+M_SEEDS = 10    # Different rotation seeds for TurboQuant variance estimation
 N_PAIRS = 10    # User-item pairs sampled per (reg, t) condition
 
 
@@ -39,12 +39,15 @@ def train_mf(X, reg_scheme="eq1"):
     """Train linear MF with Netflix regularization. Returns detached (A, B)."""
     import torch
 
+    # Fixed seed for reproducible training
+    torch.manual_seed(0)
+
     n, p = X.shape
     A = torch.nn.Parameter(torch.randn(p, K) * 0.01)
     B = torch.nn.Parameter(torch.randn(p, K) * 0.01)
     optimizer = torch.optim.Adam([A, B], lr=0.001)
 
-    for _ in range(100):
+    for epoch in range(100):
         optimizer.zero_grad()
         recon = X @ A @ B.T
         loss = ((X - recon) ** 2).sum()
@@ -71,6 +74,8 @@ def generate_D(t, z):
 def generate_heatmaps(results):
     """Save three heatmaps: cosine sim, raw dot product, TurboQuant variance."""
     import numpy as np
+    import matplotlib
+    matplotlib.use("Agg")   # non-interactive backend for Modal containers
     import matplotlib.pyplot as plt
     import seaborn as sns
 
@@ -78,15 +83,14 @@ def generate_heatmaps(results):
     # reshape (2, 5) then .T → (5, 2) so rows=t, cols=reg_scheme
     cos_data    = np.array([r["cos_sim_mean"] for r in results]).reshape(2, len(T_VALS)).T
     raw_data    = np.array([r["raw_dot_mean"] for r in results]).reshape(2, len(T_VALS)).T
-    # Use last bit-width in BITS for the variance heatmap (highest compression)
     tq_var_data = np.array([r["tq_avg_var"][BITS[-1]] for r in results]).reshape(2, len(T_VALS)).T
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
     for ax, data, title, label in [
-        (axes[0], cos_data,    "Netflix: Cosine Similarity (Arbitrary)",       "Cosine Similarity"),
-        (axes[1], raw_data,    "Netflix: Raw Dot Product (Stable)",             "Raw Dot Product"),
-        (axes[2], tq_var_data, f"TurboQuant {BITS[-1]}-bit: Variance vs D Skew", "TQ Variance"),
+        (axes[0], cos_data,    "Netflix: Cosine Similarity (Arbitrary)",          "Cosine Similarity"),
+        (axes[1], raw_data,    "Netflix: Raw Dot Product (Stable)",                "Raw Dot Product"),
+        (axes[2], tq_var_data, f"TurboQuant {BITS[-1]}-bit: Variance vs D Skew",  "TQ Variance"),
     ]:
         sns.heatmap(data, ax=ax, xticklabels=["eq1", "eq2"], yticklabels=T_VALS,
                     cmap="viridis", cbar_kws={"label": label})
@@ -117,6 +121,7 @@ def run_experiments():
     print(f"Loaded X: {n_users} users × {n_items} items")
 
     # Fixed z so κ(D) grows monotonically with t across all conditions
+    torch.manual_seed(99)
     z = torch.randn(K)
     results = []
 
@@ -134,6 +139,7 @@ def run_experiments():
             user_emb_s = user_emb @ D       # u^(D) = uD
             item_emb_s = item_emb @ D_inv   # v^(D) = vD^{-1}
 
+            # Fixed pair sample for all conditions
             np.random.seed(42)
             user_idxs = np.random.choice(n_users, N_PAIRS, replace=False)
             item_idxs = np.random.choice(n_items, N_PAIRS, replace=False)
@@ -152,24 +158,28 @@ def run_experiments():
                 for v in item_idxs:
                     dot_vals.append(torch.dot(user_emb_s[u], item_emb_s[v]).item())
 
-            # 3. TurboQuant: per-pair variance across seeds, per bit-width
+            # 3. TurboQuant: per-pair variance across different rotation seeds
             pair_keys = [(u, v) for u in user_idxs[:5] for v in item_idxs[:5]]
             tq_avg_var = {}
 
             for b in BITS:
-                tq = TurboQuantProd(d=K, bits=b)
                 pair_dots = {k: [] for k in pair_keys}
 
                 for seed in range(M_SEEDS):
-                    torch.manual_seed(seed)
-                    item_quant   = tq.quantize(item_emb_s)
-                    item_dequant = tq.dequantize(item_quant)   # unbiased E[DeQuant(Q(x))] = x
+                    # CRITICAL: new TurboQuantProd per seed to get a different
+                    # rotation matrix Π and QJL matrix S.  The quantize/dequantize
+                    # pipeline is deterministic given these matrices, so
+                    # torch.manual_seed alone does nothing after construction.
+                    tq = TurboQuantProd(dim=K, bits=b, seed=seed)
+
+                    q = tq.quantize(item_emb_s)        # → ProdQuantized namedtuple
+                    item_dequant = tq.dequantize(q)     # → tensor, E[x̂] = x (unbiased)
 
                     for u, v in pair_keys:
                         dot = torch.dot(user_emb_s[u], item_dequant[v]).item()
                         pair_dots[(u, v)].append(dot)
 
-                # Variance per pair, then average (fixed: separate per bit-width)
+                # Variance per pair across seeds, then average
                 tq_avg_var[b] = float(np.mean([np.var(dots) for dots in pair_dots.values()]))
 
             results.append({

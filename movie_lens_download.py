@@ -54,11 +54,13 @@ def download_and_save():
     user_map = {uid: idx for idx, uid in enumerate(user_ids)}
     item_map = {iid: idx for idx, iid in enumerate(item_ids)}
 
-    # Build user-item matrix via vectorized assignment (fixes iterrows slowness)
+    # Build user-item matrix with actual ratings (not binary)
+    # Netflix paper uses explicit 1-5 star ratings, not implicit feedback
     u_indices = df["user_id"].map(user_map).values.copy()
     i_indices = df["item_id"].map(item_map).values.copy()
+    ratings = df["rating"].values.astype("float32")
     X = torch.zeros((n_users, n_items))
-    X[u_indices, i_indices] = 1.0
+    X[u_indices, i_indices] = torch.from_numpy(ratings)
 
     # Save to volume and commit
     torch.save({"X": X, "user_map": user_map, "item_map": item_map},
