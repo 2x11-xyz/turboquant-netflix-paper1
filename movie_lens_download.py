@@ -55,8 +55,8 @@ def download_and_save():
     item_map = {iid: idx for idx, iid in enumerate(item_ids)}
 
     # Build user-item matrix via vectorized assignment (fixes iterrows slowness)
-    u_indices = df["user_id"].map(user_map).values
-    i_indices = df["item_id"].map(item_map).values
+    u_indices = df["user_id"].map(user_map).values.copy()
+    i_indices = df["item_id"].map(item_map).values.copy()
     X = torch.zeros((n_users, n_items))
     X[u_indices, i_indices] = 1.0
 
