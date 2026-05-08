@@ -137,7 +137,7 @@ def generate_charts():
             est = r[key]
             bias = (est - true).mean()
 
-            ax.scatter(true, est, s=0.3, alpha=0.3, c=color)
+            ax.scatter(true, est, s=0.3, alpha=0.3, c=color, rasterized=True)
             ax.plot([0, 1], [0, 1], 'k-', lw=0.8, alpha=0.5)
             ax.set_title(f"{label} | κ={r['kappa']:.0f}\nbias={bias:.4f}", fontsize=8)
             ax.set_xlim(0, 1); ax.set_ylim(0, 1)
@@ -157,7 +157,7 @@ def generate_charts():
         fontsize=11, fontweight="bold")
     fig2.tight_layout()
     fig2.savefig("/results/figure1_scatter.png", dpi=200, bbox_inches="tight")
-    fig2.savefig("/results/figure1_scatter.pdf", bbox_inches="tight")
+    fig2.savefig("/results/figure1_scatter.pdf", dpi=300, bbox_inches="tight")
     plt.close(fig2)
     print("Saved figure1_scatter.png + .pdf")
 
