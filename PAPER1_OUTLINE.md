@@ -1,96 +1,95 @@
-# Paper 1 Outline: Resolving Cosine Similarity Arbitrariness via TurboQuant
-**Working Title**: Closed-Form Resolution of Embedding Similarity Ambiguities via Near-Optimal Vector Quantization  
+# Paper 1: Preserving Scale-Invariant User-Item Scores via Near-Optimal Quantization
+**Working Title**: Preserving Scale-Invariant User-Item Scores via Near-Optimal Quantization  
 **Target**: RecSys Workshop / NeurIPS Efficient ML Workshop (Short Paper, 4 pages max)
 
 ---
 
 ## 1. Introduction (0.5 page)
-- Netflix (2403.05440) identified critical flaw: cosine similarity of learned embeddings yields **arbitrary, meaningless results** due to unconstrained magnitude/rotation degrees of freedom
-- Core issue: Cosine similarity discards magnitude information Netflix argues is meaningful; normalization creates opacity
-- Netflix's recommendation: Use unnormalized dot products—but no compressed/quantized solution exists for production scale
-- **Our contribution**: Show TurboQuant's unbiased dot product quantization (2504.19874) provably resolves this issue with near-optimal compression (2.5-3.5 bits/value)
+- Netflix (2403.05440) proved cosine similarity of learned embeddings is **arbitrary**: equivalent models under diagonal rescaling D produce different cosine values, so cosine-based comparisons are meaningless
+- Their fix: use raw dot products, which are provably D-invariant
+- **Open problem**: No compressed/quantized estimator has been shown to preserve this invariance. Standard scalar quantization introduces bias; PQ requires global retraining
+- **Our contribution**: We show TurboQuant's one-sided unbiased estimator (2504.19874) preserves D-invariant dot products in expectation at 2–3 bits/value, and we characterize how quantization variance scales with the condition number κ(D) — yielding a prescriptive link to Netflix's Eq.2 weight decay
 
 ---
 
 ## 2. Problem Statement: Netflix's Closed-Form Setup (0.75 page)
 ### 2.1 Linear Matrix Factorization (Netflix Section 2)
 - Model: $X \approx XAB^\top$ where $A,B \in \mathbb{R}^{p \times k}$
+- User embeddings $U = XA \in \mathbb{R}^{n \times k}$, item embeddings $V = B \in \mathbb{R}^{p \times k}$
 - Regularization schemes:
-  - Eq.1: $\min_{A,B} ||X - XAB^\top||_F^2 + \lambda ||AB^\top||_F^2$ (invariant to diagonal scaling $D$)
-  - Eq.2: $\min_{A,B} ||X - XAB^\top||_F^2 + \lambda(||XA||_F^2 + ||B||_F^2)$ (not scale-invariant)
-- **Key result (Netflix Eq.3)**: $\hat{A}^{(D)} = \hat{A}D$, $\hat{B}^{(D)} = \hat{B}D^{-1}$ are valid solutions for Eq.1
-  - Cosine similarity becomes arbitrary: $\text{cosSim}(\hat{b}_i^{(D)}, \hat{b}_{i'}^{(D)}) = \text{arbitrary}(\text{scaling } D)$
+  - **Eq.1**: $\min_{A,B} \|X - XAB^\top\|_F^2 + \lambda \|AB^\top\|_F^2$ — invariant to diagonal scaling D
+  - **Eq.2**: $\min_{A,B} \|X - XAB^\top\|_F^2 + \lambda(\|XA\|_F^2 + \|B\|_F^2)$ — breaks D-invariance via weight decay
 
-### 2.2 The Core Problem for Quantization
-- Unnormalized dot products are well-defined: $\langle \hat{A}^{(D)}_u, \hat{B}^{(D)}_i \rangle = \langle \hat{A}_u, \hat{B}_i \rangle$ (invariant to $D$)
-- But compressing dot products traditionally requires retraining (PQ) or introduces bias (scalar quantization)
-
----
-
-## 3. Mathematical Treatment: Closed-Form Resolution (1 page)
-### 3.1 TurboQuant's Unbiased Estimator (Theorem 2)
-For any vectors $x, y \in \mathbb{R}^d$ and bit-width $b \geq 1$:
-$$
-\mathbb{E}[Q_{\text{prod}}(x)^T Q_{\text{prod}}(y)] = x^T y \quad \text{(exactly unbiased)}
-$$
-$$
-\text{Var}(Q_{\text{prod}}(x)^T Q_{\text{prod}}(y)) \leq C \cdot 4^{-b} \cdot ||x||^2 ||y||^2
-$$
-
-### 3.2 Direct Resolution of Netflix's Problem
-For Netflix's scale-transformed embeddings $x^{(D)} = xD$, $y^{(D)} = yD^{-1}$:
-$$
-\mathbb{E}[Q(x^{(D)})^T Q(y^{(D)})] = (xD)^T (yD^{-1}) = x^T y \quad \text{(invariant to arbitrary } D\text{)}
-$$
-- Unlike cosine similarity, TurboQuant dot products **retain invariance** to Netflix's problematic scaling degree of freedom
-- Variance decays exponentially at rate $4^{-b}$ (closed-form convergence guarantee)
-
-### 3.3 MSE Preservation (Theorem 1)
-$$
-\mathbb{E}[||x - Q_{\text{mse}}(x)||^2] \leq \frac{\pi\sqrt{3}}{2} \cdot 4^{-b}
-$$
-- Preserves magnitude information Netflix identifies as meaningful (unlike cosine normalization)
+### 2.2 The D-Scaling Ambiguity (Netflix Eq.3)
+- For any invertible diagonal $D$: $\hat{A}^{(D)} = \hat{A}D$, $\hat{B}^{(D)} = \hat{B}D^{-1}$ are equivalent Eq.1 minimizers
+- **Cosine similarity is arbitrary**: $\cos(u^{(D)}, v^{(D)})$ changes with D
+- **Dot product is invariant**: $\langle u^{(D)}, v^{(D)} \rangle = \langle uD, vD^{-1} \rangle = \langle u, v \rangle$ for all D
+- The problem: how to compress these dot products without destroying invariance?
 
 ---
 
-## 4. Replicating Netflix's Experiments (1 page)
-### 4.1 Exact Replication of Netflix Section 2
-- Train linear MF models on MovieLens-1M using both Netflix regularization schemes (Eq.1, Eq.2)
-- Vary diagonal scaling $D = \text{diag}(d_1, ..., d_k)$ with random positive entries
-- **Netflix's result**: Cosine similarity varies arbitrarily with $D$; dot products remain stable
+## 3. TurboQuant Preserves D-Invariance (1 page)
+### 3.1 One-Sided Unbiased Estimator (TurboQuant Theorem 2)
+TurboQuant_IP quantizes **one argument** (items) while leaving the other (users) in full precision:
+$$\mathbb{E}[\langle y, \text{DeQuant}(Q(x)) \rangle] = \langle y, x \rangle \quad \text{(exactly unbiased)}$$
 
-### 4.2 Our Extension: Quantized Similarity
-- Apply TurboQuant at 2.5/3.5 bits to all embeddings
-- Compare 3 similarity methods across $D$ scalings:
-  1. Cosine similarity (cosSim)
-  2. Raw dot product (Netflix's recommendation)
-  3. TurboQuant quantized dot product (our method)
-- **Expected result**: TurboQuant dot products maintain stability AND achieve 4-5x compression with <2% degradation vs raw dot product
+Applied to Netflix's D-scaled embeddings (quantize items only):
+$$\mathbb{E}[\langle u^{(D)}, \text{DeQuant}(Q(v^{(D)})) \rangle] = \langle u^{(D)}, v^{(D)} \rangle = \langle u, v \rangle$$
 
----
+The estimator preserves D-invariance **in expectation** at any bit-width b ≥ 2.
 
-## 5. Quantitative Validation (0.5 page)
-| Metric | Cosine Sim | Raw Dot Product | TurboQuant (3.5 bits) | TurboQuant (2.5 bits) |
-|--------|------------|-----------------|------------------------|------------------------|
-| Invariance to $D$ scaling | ❌ Arbitrary | ✅ Stable | ✅ Stable | ✅ Stable |
-| Compression ratio | 1x (FP16) | 1x (FP16) | 4.6x | 6.2x |
-| Recall@10 (MovieLens) | Varies with $D$ | 0.82 | 0.81 | 0.79 |
-| Variance across $D$ | High | Low | Low (bound by $4^{-b}$) | Low (bound by $4^{-b}$) |
+### 3.2 Variance Depends on κ(D) — The Prescriptive Link
+The variance of the quantized dot product depends on $\|v^{(D)}\|^2$:
+$$\text{Var}[\langle u, \hat{v}^{(D)} \rangle] \propto \|v^{(D)}\|^2 = \|vD^{-1}\|^2$$
 
-- Additional baselines: Product Quantization (PQ), RaBitQ
-- Show PQ fails on incremental items (lead into Paper 2)
+When D has high condition number κ(D), some item embedding coordinates are amplified by $D^{-1}$, increasing $\|v^{(D)}\|^2$ and thus the quantization variance. This creates a **prescriptive connection** to Netflix's Eq.2 regularization:
+
+- **Eq.2's weight decay** on $\|B\|_F^2$ directly controls $\|v\|^2$, bounding the worst-case quantization variance
+- Practitioners should prefer Eq.2-style regularization when planning to quantize embeddings
+- This turns TurboQuant's D-dependent variance from a weakness into a design guideline
+
+### 3.3 MSE Preservation (TurboQuant Theorem 1)
+$$\mathbb{E}[\|x - Q_{\text{mse}}(x)\|^2] \leq \frac{\pi\sqrt{3}}{2} \cdot 4^{-b}$$
+TurboQuant preserves magnitude information that Netflix identifies as meaningful (unlike cosine normalization which discards it).
 
 ---
 
-## 6. Discussion & Next Steps (0.25 page)
-- **Paper 1 contribution**: Provably resolved Netflix's cosine similarity issue with closed-form bounds
-- **Lead into Paper 2**: TurboQuant's data-oblivious design enables real-time incremental item addition to RecSys (no retraining needed)
-- **Reproducibility**: All code + pretrained quantizers released at [repo URL]
+## 4. Experiments (1 page)
+### 4.1 Setup
+- **Dataset**: MovieLens-1M (6,040 users × 3,706 items, explicit 1–5 star ratings)
+- **Model**: Linear MF ($X \approx XAB^\top$, K=50, λ=0.01, 100 epochs, Adam)
+- **D-scaling**: $D = \text{diag}(e^{tz_1}, \ldots, e^{tz_k})$ with fixed $z \sim \mathcal{N}(0,I)$, $t \in \{0, 0.5, 1, 2, 5\}$
+  - κ(D) ranges from 1 (t=0) to 2.9×10¹² (t=5)
+- **TurboQuant**: TurboQuantIP at 2 and 3 bits, one-sided (items only), 10 rotation seeds for variance estimation
+
+### 4.2 Results: 4-Panel Heatmap
+| Panel | What it shows | Key finding |
+|-------|---------------|-------------|
+| **Cosine Similarity** | Mean cos(u,v) across 100 pairs per condition | Decays from 0.04 → 0.00 as t grows. **Arbitrary.** |
+| **Raw Dot Product** | Mean ⟨u,v⟩ across 100 pairs per condition | Stable at 0.1263 (Eq.1) / 0.1271 (Eq.2) for all t. **D-invariant.** |
+| **TQ 2-bit Variance** | log₁₀(avg per-pair variance across 10 seeds) | Grows from 10⁻¹·² (t=0) to 10²⁰·⁷ (t=5). **22 orders of magnitude.** |
+| **TQ 3-bit Variance** | Same, at 3 bits | Grows from 10⁻¹·⁷ (t=0) to 10²⁰·¹ (t=5). ~0.5 log₁₀ lower than 2-bit. |
+
+### 4.3 Key Observations
+1. **Dot product invariance confirmed**: Raw ⟨u,v⟩ is identical (to 4 decimal places) across all D scalings, for both Eq.1 and Eq.2
+2. **TurboQuant mean preserves invariance**: E[⟨u, DeQuant(Q(v))⟩] = ⟨u, v⟩ regardless of D (by Theorem 2)
+3. **Variance explodes with κ(D)**: At t=5 (κ≈3×10¹²), quantization variance reaches 10²⁰ — unusable in practice
+4. **More bits help, but don't fix D-sensitivity**: 3-bit is ~0.5 log₁₀ better than 2-bit, but both explode equally under high κ(D)
+5. **Weight decay (Eq.2) bounds variance**: Eq.2 consistently shows lower TQ variance than Eq.1 (e.g., 10²⁰·⁴ vs 10²⁰·⁷ at t=5), confirming the prescriptive link
+
+---
+
+## 5. Discussion & Next Steps (0.25 page)
+- **Paper 1 contribution**: First proof that TurboQuant preserves Netflix's D-invariant dot products in expectation, plus a prescriptive link between Eq.2 weight decay and quantization variance control
+- **Practical guidance**: Use Eq.2-style regularization when planning to quantize; it bounds the worst-case variance of the quantized estimator
+- **Limitation**: Variance grows with κ(D); TurboQuant does not "fix" the D-scaling ambiguity, it provides an unbiased compressed estimator whose quality degrades predictably with embedding condition number
+- **Lead into Paper 2**: TurboQuant's data-oblivious design (no codebook retraining needed) enables real-time incremental item addition — a separate contribution explored in follow-up work
+- **Reproducibility**: Code + experiment scripts at https://github.com/2x11-xyz/turboquant-netflix-paper1
 
 ---
 
 ## References
-1. Netflix: arXiv:2403.05440 (Is Cosine-Similarity of Embeddings Really About Similarity?)
-2. TurboQuant: arXiv:2504.19874 (Online Vector Quantization with Near-optimal Distortion Rate)
-3. RaBitQ: [relevant citation]
-4. Product Quantization: [relevant citation]
+1. Netflix: arXiv:2403.05440 — Is Cosine-Similarity of Embeddings Really About Similarity?
+2. TurboQuant: arXiv:2504.19874 — Online Vector Quantization with Near-optimal Distortion Rate
+3. Product Quantization: Jégou et al. (2011) — Product quantization for nearest neighbor search
+4. RaBitQ: Gao & Long (2024) — RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound
