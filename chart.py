@@ -137,7 +137,7 @@ def generate_charts():
             est = r[key]
             bias = (est - true).mean()
 
-            ax.scatter(true, est, s=0.3, alpha=0.3, c=color, rasterized=True)
+            ax.scatter(true, est, s=0.3, alpha=0.3, c=color)
             ax.plot([0, 1], [0, 1], 'k-', lw=0.8, alpha=0.5)
             ax.set_title(f"{label} | κ={r['kappa']:.0f}\nbias={bias:.4f}", fontsize=8)
             ax.set_xlim(0, 1); ax.set_ylim(0, 1)
