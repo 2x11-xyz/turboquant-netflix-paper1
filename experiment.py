@@ -489,6 +489,18 @@ def run_experiments():
     A_eq2, B_eq2 = train_mf(X_torch, "eq2", LAMBDA_EQ2)
     print(f"  A: {A_eq2.shape}, B: {B_eq2.shape}")
 
+    # Save all data for offline charting
+    print("\nSaving experiment data...")
+    torch.save({
+        "A_eq1": A_eq1, "B_eq1": B_eq1,
+        "A_eq2": A_eq2, "B_eq2": B_eq2,
+        "X": X_torch,
+        "item_clusters": item_clusters,
+        "user_cluster_pref": user_cluster_pref,
+    }, "/results/experiment_data.pt")
+    volume.commit()
+    print("Saved experiment_data.pt")
+
     print("\nGenerating Figure 1 (Netflix replication + TQ extension)...")
     generate_figure1(A_eq1, B_eq1, A_eq2, B_eq2, X_torch, item_clusters, user_cluster_pref, LAMBDA_EQ1)
     volume.commit()
