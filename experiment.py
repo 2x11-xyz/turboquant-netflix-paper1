@@ -112,7 +112,7 @@ def run_experiments():
     """Replicate Netflix heatmaps + add TurboQuant layer."""
     import torch
     import numpy as np
-    from turboquant import TurboQuantProd
+    from turboquant import TurboQuantIP
 
     # Load pre-downloaded data
     data = torch.load("/results/movielens_1m.pt", weights_only=False)
@@ -166,14 +166,16 @@ def run_experiments():
                 pair_dots = {k: [] for k in pair_keys}
 
                 for seed in range(M_SEEDS):
-                    # CRITICAL: new TurboQuantProd per seed to get a different
-                    # rotation matrix Π and QJL matrix S.  The quantize/dequantize
-                    # pipeline is deterministic given these matrices, so
-                    # torch.manual_seed alone does nothing after construction.
-                    tq = TurboQuantProd(dim=K, bits=b, seed=seed)
+                    # New TurboQuantIP per seed → different rotation Π and QJL S.
+                    # quantize/dequantize is deterministic given these matrices.
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", DeprecationWarning)
+                        tq = TurboQuantIP(dim=K, bits=b, device='cpu', seed=seed)
 
-                    q = tq.quantize(item_emb_s)        # → ProdQuantized namedtuple
-                    item_dequant = tq.dequantize(q)     # → tensor, E[x̂] = x (unbiased)
+                    # quantize returns 4-tuple; dequantize takes same 4 args
+                    mse_idx, norms, qjl_signs, res_norms = tq.quantize(item_emb_s)
+                    item_dequant = tq.dequantize(mse_idx, norms, qjl_signs, res_norms)
 
                     for u, v in pair_keys:
                         dot = torch.dot(user_emb_s[u], item_dequant[v]).item()
