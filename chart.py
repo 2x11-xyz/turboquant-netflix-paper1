@@ -45,79 +45,10 @@ def generate_charts():
     item_clusters = data["item_clusters"]
     print("Loaded experiment_data.pt")
 
-    # --- Helpers ---
-    def sort_items_by_cluster(clusters):
-        return np.argsort(clusters, kind='stable')
-
-    def get_D_scalings(B, lam):
-        U, sigma, Vt = torch.linalg.svd(B, full_matrices=False)
-        scalings = {}
-        scalings["B = V_k"] = torch.eye(K)
-        scalings["B = V_k·dMat(σ²)"] = torch.diag(sigma ** 2)
-        scalings["B = V_k·dMat((1+λ/σ²)^½)"] = torch.diag(
-            torch.sqrt(1.0 + lam / (sigma ** 2 + 1e-10)))
-        inner = sigma * torch.clamp(1.0 - lam / (sigma ** 2 + 1e-10), min=0.0)
-        scalings["B = V_k·dMat(σ(1-λ/σ²)₊^½)"] = torch.diag(
-            torch.sqrt(inner + 1e-10))
-        return scalings
-
-    item_sort = sort_items_by_cluster(item_clusters)
-    scalings = get_D_scalings(B_eq1, LAMBDA_EQ1)
-
-    # =====================================================================
-    # FIGURE 1: Netflix replication (item-item cosine only)
-    # =====================================================================
-    print("\n--- Figure 1: Netflix replication ---")
-
-    def cosine_sim_matrix(B_scaled):
-        norms = torch.norm(B_scaled, dim=1, keepdim=True).clamp(min=1e-8)
-        B_normed = B_scaled / norms
-        return (B_normed @ B_normed.T).numpy()
-
-    # True cluster matrix
-    true_sim = np.zeros((N_ITEMS, N_ITEMS), dtype=np.float32)
-    for i in range(N_ITEMS):
-        for j in range(N_ITEMS):
-            if item_clusters[i] == item_clusters[j]:
-                true_sim[i, j] = 1.0
-
-    scaling_names = list(scalings.keys())
-    cos_matrices = {}
-    for name, D in scalings.items():
-        cos_matrices[name] = cosine_sim_matrix(B_eq1 @ D)
-
-    cos_eq2 = cosine_sim_matrix(B_eq2)
-
-    n_cols = 1 + len(scaling_names) + 1
-    fig1, axes1 = plt.subplots(1, n_cols, figsize=(3.2 * n_cols, 3.2))
-
-    def plot_item_item(ax, mat, title, cmap="RdBu_r", vmin=None, vmax=None):
-        s = mat[np.ix_(item_sort, item_sort)]
-        if vmin is None: vmin = np.percentile(s, 2)
-        if vmax is None: vmax = np.percentile(s, 98)
-        ax.imshow(s, cmap=cmap, vmin=vmin, vmax=vmax,
-                  aspect='equal', interpolation='nearest')
-        ax.set_title(title, fontsize=8)
-        ax.set_xticks([]); ax.set_yticks([])
-
-    plot_item_item(axes1[0], true_sim, "True Clusters", cmap="bone_r", vmin=0, vmax=1)
-    for i, name in enumerate(scaling_names):
-        plot_item_item(axes1[1 + i], cos_matrices[name], f"cosSim: {name}")
-    plot_item_item(axes1[-1], cos_eq2, "cosSim: Eq.2 (ref)")
-
-    fig1.suptitle(
-        "Netflix Figure 1 Replication: Cosine Similarity Is Arbitrary Under D-Scaling\n"
-        "(Synthetic: p=1,000 items, C=5 clusters, K=50, Eq.1 λ=10,000)",
-        fontsize=10, fontweight="bold")
-    fig1.tight_layout()
-    fig1.savefig("/results/figure1_netflix.png", dpi=200, bbox_inches="tight")
-    plt.close(fig1)
-    print("Saved figure1_netflix.png")
-
-    # =====================================================================
-    # FIGURE 2: TQ contribution — scatter + variance vs κ
-    # =====================================================================
-    print("\n--- Figure 2: TQ contribution ---")
+    # =================================================================
+    # FIGURE 1: TQ vs MSE-Only scatter plots
+    # =================================================================
+    print("\n--- Figure 1: TQ vs MSE-Only scatter ---")
 
     torch.manual_seed(99)
     z = torch.randn(K)
@@ -187,14 +118,14 @@ def generate_charts():
         print(f"  t={t}, κ={kappa:.1f}")
 
     # --- Figure 2A: 3×4 Scatter (transposed: rows=κ, cols=method) ---
-    fig2, axes2 = plt.subplots(3, 4, figsize=(10, 7.5))
+    fig2, axes2 = plt.subplots(3, 4, figsize=(7, 5.5))
 
     scatter_ts = [0, 0.5, 1]
     col_configs = [
-        ("tq_3bit_mean",  "TQ 3-bit",      "steelblue"),
-        ("tq_2bit_mean",  "TQ 2-bit",      "cornflowerblue"),
-        ("mse_3bit_mean", "MSE-only 3-bit", "indianred"),
-        ("mse_2bit_mean", "MSE-only 2-bit", "lightsalmon"),
+        ("tq_2bit_mean",  "TQ 2-bit",      "steelblue"),
+        ("mse_2bit_mean", "MSE-only 2-bit", "indianred"),
+        ("tq_3bit_mean",  "TQ 3-bit",      "cornflowerblue"),
+        ("mse_3bit_mean", "MSE-only 3-bit", "lightsalmon"),
     ]
 
     for row, t in enumerate(scatter_ts):
@@ -225,73 +156,10 @@ def generate_charts():
         "Each dot = one (user, item) pair, MC mean over 100 seeds",
         fontsize=11, fontweight="bold")
     fig2.tight_layout()
-    fig2.savefig("/results/figure2a_scatter.png", dpi=200, bbox_inches="tight")
+    fig2.savefig("/results/figure1_scatter.png", dpi=200, bbox_inches="tight")
+    fig2.savefig("/results/figure1_scatter.pdf", bbox_inches="tight")
     plt.close(fig2)
-    print("Saved figure2a_scatter.png")
-
-    # --- Figure 2B: Variance vs κ(D) ---
-    fig3, (ax_bias, ax_var) = plt.subplots(1, 2, figsize=(10, 4.5))
-
-    kappas = [results[t]["kappa"] for t in t_vals]
-
-    for bits, marker in [(2, 's'), (3, 'o')]:
-        # TQ bias with SEM error bars
-        biases_tq = []
-        sems_tq = []
-        vars_tq = []
-        biases_mse = []
-        vars_mse = []
-        for t in t_vals:
-            r = results[t]
-            true = r["true_dots"]
-            tq_mean = r[f"tq_{bits}bit_mean"]
-            mse_mean = r[f"mse_{bits}bit_mean"]
-
-            pair_bias = tq_mean - true
-            biases_tq.append(pair_bias.mean())
-            sems_tq.append(pair_bias.std() / np.sqrt(len(pair_bias)))
-            vars_tq.append(r[f"tq_{bits}bit_var"].mean())
-
-            pair_bias_mse = mse_mean - true
-            biases_mse.append(pair_bias_mse.mean())
-            vars_mse.append(r[f"mse_{bits}bit_var"].mean())
-
-        # Bias panel
-        ax_bias.errorbar(kappas, biases_tq, yerr=[1.96*s for s in sems_tq],
-                         fmt=f'-{marker}', label=f"TQ {bits}-bit", capsize=3,
-                         color="steelblue" if bits == 3 else "cornflowerblue")
-        ax_bias.plot(kappas, biases_mse, f'--{marker}',
-                     label=f"MSE-only {bits}-bit",
-                     color="indianred" if bits == 3 else "lightsalmon")
-
-        # Variance panel
-        ax_var.plot(kappas, vars_tq, f'-{marker}', label=f"TQ {bits}-bit",
-                    color="steelblue" if bits == 3 else "cornflowerblue")
-        ax_var.plot(kappas, vars_mse, f'--{marker}', label=f"MSE-only {bits}-bit",
-                    color="indianred" if bits == 3 else "lightsalmon")
-
-    ax_bias.axhline(0, color='k', lw=0.5, ls=':')
-    ax_bias.set_xscale('log')
-    ax_bias.set_xlabel("κ(D)")
-    ax_bias.set_ylabel("Mean Bias (with 95% CI)")
-    ax_bias.set_title("Bias vs Condition Number")
-    ax_bias.legend(fontsize=7)
-
-    ax_var.set_xscale('log')
-    ax_var.set_yscale('log')
-    ax_var.set_xlabel("κ(D)")
-    ax_var.set_ylabel("Mean Variance")
-    ax_var.set_title("Variance vs Condition Number")
-    ax_var.legend(fontsize=7)
-
-    fig3.suptitle(
-        "Figure 2B: Bias and Variance Under D-Scaling\n"
-        "User-item scores ⟨u⁽ᴰ⁾, ṽ⁽ᴰ⁾⟩, 100 seeds, 10K pairs per κ",
-        fontsize=11, fontweight="bold")
-    fig3.tight_layout()
-    fig3.savefig("/results/figure2b_bias_variance.png", dpi=200, bbox_inches="tight")
-    plt.close(fig3)
-    print("Saved figure2b_bias_variance.png")
+    print("Saved figure1_scatter.png + .pdf")
 
     # =====================================================================
     # TABLE 1: Print quantitative results
