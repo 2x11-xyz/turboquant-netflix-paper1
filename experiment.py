@@ -72,32 +72,58 @@ def generate_D(t, z):
 
 
 def generate_heatmaps(results):
-    """Save three heatmaps: cosine sim, raw dot product, TurboQuant variance."""
+    """Save heatmaps: cosine sim, raw dot product, TQ variance (log scale)."""
     import numpy as np
     import matplotlib
-    matplotlib.use("Agg")   # non-interactive backend for Modal containers
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
     import seaborn as sns
 
     # results order: [eq1_t0, eq1_t0.5, ..., eq2_t0, eq2_t0.5, ...]
     # reshape (2, 5) then .T → (5, 2) so rows=t, cols=reg_scheme
     cos_data    = np.array([r["cos_sim_mean"] for r in results]).reshape(2, len(T_VALS)).T
     raw_data    = np.array([r["raw_dot_mean"] for r in results]).reshape(2, len(T_VALS)).T
-    tq_var_data = np.array([r["tq_avg_var"][BITS[-1]] for r in results]).reshape(2, len(T_VALS)).T
+    kappa_data  = np.array([r["kappa_D"] for r in results]).reshape(2, len(T_VALS)).T
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    # Collect TQ variance for BOTH bit-widths
+    tq_var_2 = np.array([r["tq_avg_var"][BITS[0]] for r in results]).reshape(2, len(T_VALS)).T
+    tq_var_3 = np.array([r["tq_avg_var"][BITS[1]] for r in results]).reshape(2, len(T_VALS)).T
 
-    for ax, data, title, label in [
-        (axes[0], cos_data,    "Netflix: Cosine Similarity (Arbitrary)",          "Cosine Similarity"),
-        (axes[1], raw_data,    "Netflix: Raw Dot Product (Stable)",                "Raw Dot Product"),
-        (axes[2], tq_var_data, f"TurboQuant {BITS[-1]}-bit: Variance vs D Skew",  "TQ Variance"),
-    ]:
-        sns.heatmap(data, ax=ax, xticklabels=["eq1", "eq2"], yticklabels=T_VALS,
-                    cmap="viridis", cbar_kws={"label": label})
-        ax.set_title(title)
-        ax.set_xlabel("Regularization")
-        ax.set_ylabel("D Skew (t)")
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
+    # Panel 1: Cosine similarity (changes with D)
+    sns.heatmap(cos_data, ax=axes[0, 0], xticklabels=["Eq.1", "Eq.2"],
+                yticklabels=[f"t={t}" for t in T_VALS], annot=True, fmt=".4f",
+                cmap="RdYlBu_r", cbar_kws={"label": "Mean Cosine Similarity"})
+    axes[0, 0].set_title("Cosine Similarity (Arbitrary under D)")
+    axes[0, 0].set_ylabel("D Skew")
+
+    # Panel 2: Raw dot product (invariant under D)
+    sns.heatmap(raw_data, ax=axes[0, 1], xticklabels=["Eq.1", "Eq.2"],
+                yticklabels=[f"t={t}" for t in T_VALS], annot=True, fmt=".4f",
+                cmap="RdYlBu_r", cbar_kws={"label": "Mean Dot Product"})
+    axes[0, 1].set_title("Raw Dot Product (D-Invariant)")
+    axes[0, 1].set_ylabel("D Skew")
+
+    # Panel 3: TQ variance (LOG SCALE) — 2-bit
+    tq2_log = np.log10(tq_var_2 + 1e-10)
+    sns.heatmap(tq2_log, ax=axes[1, 0], xticklabels=["Eq.1", "Eq.2"],
+                yticklabels=[f"t={t}" for t in T_VALS], annot=True, fmt=".1f",
+                cmap="YlOrRd", cbar_kws={"label": "log₁₀(Variance)"})
+    axes[1, 0].set_title(f"TurboQuant {BITS[0]}-bit: Variance (log₁₀)")
+    axes[1, 0].set_ylabel("D Skew")
+
+    # Panel 4: TQ variance (LOG SCALE) — 3-bit
+    tq3_log = np.log10(tq_var_3 + 1e-10)
+    sns.heatmap(tq3_log, ax=axes[1, 1], xticklabels=["Eq.1", "Eq.2"],
+                yticklabels=[f"t={t}" for t in T_VALS], annot=True, fmt=".1f",
+                cmap="YlOrRd", cbar_kws={"label": "log₁₀(Variance)"})
+    axes[1, 1].set_title(f"TurboQuant {BITS[1]}-bit: Variance (log₁₀)")
+    axes[1, 1].set_ylabel("D Skew")
+
+    plt.suptitle("Netflix D-Scaling Invariance × TurboQuant Quantization Variance\n"
+                 "(MovieLens-1M, K=50, λ=0.01)", fontsize=14, fontweight="bold")
     plt.tight_layout()
     plt.savefig("/results/netflix_turboquant_heatmaps.png", dpi=300)
     plt.close()
