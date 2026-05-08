@@ -1,145 +1,174 @@
-# Paper 1: Preserving Scale-Invariant Scores Under Compression
-**Working Title**: Preserving Scale-Invariant User-Item Scores via Near-Optimal Quantization
+# Paper 1: The Bias-Variance Tradeoff in Compressing D-Invariant Recommender Scores
+**Working Title**: Compressing Scale-Invariant Recommender Scores: An Unbiasedness-Ranking Tradeoff  
 **Target**: RecSys Workshop / NeurIPS Efficient ML Workshop (Short Paper, 4 pages max)
 
 ---
 
 ## 1. Introduction (0.5 page)
-- Netflix (2403.05440) proved cosine similarity of learned embeddings is **arbitrary**: equivalent models under diagonal rescaling D produce different cosine values, so cosine-based comparisons are meaningless
-- Their fix: use raw dot products, which are provably D-invariant. **This is theoretically correct and settled.**
-- **The production gap**: Raw dot products solve the invariance problem, but serving them at scale requires compression. Systems with billions of items cannot store full-precision embeddings - they need compressed representations for memory and ANN retrieval (FAISS, ScaNN, etc.)
-- **The compression dilemma**: Standard compression methods (scalar quantization, product quantization) do not guarantee unbiased dot product estimation. Naive MSE-optimal quantization introduces systematic bias - compressed scores systematically underestimate true scores.
-- **Our contribution**: We observe that TurboQuant (2504.19874), a near-optimal multi-bit unbiased inner product quantizer, preserves Netflix's D-invariant scores in expectation at 2-3 bits/value. We make this connection explicit, verify it experimentally on Netflix's own synthetic setup, and derive a prescriptive link between Eq.2 weight decay and quantization variance control. Our theoretical observation is a corollary of Netflix Eq.3 and TurboQuant Theorem 2; the contribution is making the connection explicit and demonstrating its practical implications.
-- **Architecture note**: TurboQuant is one-sided - items are quantized, user queries remain full-precision. This matches the asymmetric serving pattern in production recommender systems (massive item index, sparse live queries).
+- Netflix (2403.05440) proved cosine similarity of learned embeddings is **arbitrary**: equivalent models under diagonal rescaling D produce different cosine values. Their fix: use raw dot products, which are D-invariant.
+- **The production gap**: Serving full-precision dot products at billion-item scale is expensive. Compression is necessary.
+- **The natural assumption**: An unbiased compressed estimator (one that preserves scores in expectation) should be superior to a biased one. TurboQuant (2504.19874) provides exactly this — a near-optimal unbiased quantizer for inner products.
+- **Our finding**: This assumption is wrong for ranking. We characterize a fundamental bias-variance tradeoff when compressing D-invariant scores:
+  - **MSE-only quantization**: Biased (systematic ~3-11% shrinkage), but low variance → **preserves rankings well**
+  - **TurboQuant**: Unbiased (preserves scores in expectation), but higher variance → **worse rankings per deployment**
+  - The bias is nearly perfectly monotonic (multiplicative), so it barely disturbs item orderings
+- **Our contribution**: We document this tradeoff, show when each method wins, and provide practitioners a decision framework.
 
-**The design space at a glance:**
+**When to use which:**
 
-| Approach | Good predictions | Valid similarities | Scalable |
+| Approach | Ranking quality | Score calibration | Memory |
 |---|---|---|---|
-| Eq.1 + cosine | Yes | No (arbitrary under D) | Yes (unit vectors, cheap ANN) |
-| Eq.2 + cosine | No (weaker accuracy) | Yes (unique solution) | Yes |
-| Eq.1 + dot product | Yes | Yes (D-invariant) | No (full precision, expensive) |
-| **Eq.1 + dot product + TQ** | **Yes** | **Yes** | **Yes** |
+| Full precision dot product | Best | Best | Worst |
+| MSE-only b-bit | Good (low variance, monotonic bias) | Bad (systematic shrinkage) | Good |
+| TQ b-bit (unbiased) | Worse (high variance per instance) | Best (unbiased in expectation) | Good |
 
-*Note: TurboQuant is not the first unbiased compressed estimator for dot products - QJL (Zandieh et al., 2024) provides unbiased 1-bit estimation. TurboQuant's novelty is achieving near-optimal distortion rates at arbitrary bit-widths.*
+**Implication**: Use MSE-only for top-K retrieval. Use TQ for any downstream task where absolute score values matter: CTR prediction, bid pricing, score thresholding, multi-model blending, A/B testing, explore/exploit bandits, revenue forecasting.
 
----
-
-## 2. Problem Statement: Netflix's Closed-Form Setup (0.75 page)
-### 2.1 Linear Matrix Factorization (Netflix Section 2)
-- Model: $X \approx XAB^\top$ where $A,B \in \mathbb{R}^{p \times k}$
-- User embeddings $U = XA \in \mathbb{R}^{n \times k}$, item embeddings $V = B \in \mathbb{R}^{p \times k}$
-- Regularization schemes:
-  - **Eq.1**: $\min_{A,B} \|X - XAB^\top\|_F^2 + \lambda \|AB^\top\|_F^2$ - invariant to diagonal scaling D
-  - **Eq.2**: $\min_{A,B} \|X - XAB^\top\|_F^2 + \lambda(\|XA\|_F^2 + \|B\|_F^2)$ - breaks D-invariance via weight decay
-
-### 2.2 The D-Scaling Ambiguity (Netflix Eq.3)
-- For any invertible diagonal $D$: $\hat{A}^{(D)} = \hat{A}D$, $\hat{B}^{(D)} = \hat{B}D^{-1}$ are equivalent Eq.1 minimizers
-- **Cosine similarity is arbitrary**: $\cos(u^{(D)}, v^{(D)})$ changes with D
-- **User-item dot product is invariant**: $\langle u^{(D)}, v^{(D)} \rangle = \langle uD, vD^{-1} \rangle = \langle u, v \rangle$ for all D
-- Note: item-item dot products $\langle v_i D^{-1}, v_j D^{-1} \rangle = v_i^\top D^{-2} v_j$ are NOT D-invariant
-- Netflix's recommendation is correct - but silent on how to **compress** these dot products for production serving
-
-### 2.3 Why Compression Matters
-- Full-precision storage is expensive at billion-item scale
-- Standard MSE-optimal quantization introduces systematic bias in dot product estimation (we demonstrate this empirically)
-- Product Quantization trains data-dependent codebooks that require retraining when item catalogs change
-- **Result**: The correct similarity measure (dot product) needs a compression method with formal unbiasedness guarantees
+*Note: TurboQuant is not the first unbiased compressed estimator — QJL (Zandieh et al., 2024) provides unbiased 1-bit estimation. TurboQuant achieves near-optimal distortion at arbitrary bit-widths.*
 
 ---
 
-## 3. TurboQuant Preserves D-Invariance Under Compression (1 page)
-### 3.1 One-Sided Unbiased Estimator (TurboQuant Theorem 2)
-TurboQuant_IP quantizes **one argument** (items) while leaving the other (users) in full precision. For unit-norm $x \in S^{d-1}$ (with norms stored separately):
-$$\mathbb{E}[\langle y, \text{DeQuant}(Q(x)) \rangle] = \langle y, x \rangle \quad \text{(exactly unbiased)}$$
+## 2. Background (0.75 page)
 
-Applied to Netflix's D-scaled embeddings (quantize items only):
+### 2.1 Netflix's D-Scaling Result
+- Model: $X \approx XAB^\top$ with two regularization schemes:
+  - **Eq.1**: $\min_{A,B} \|X - XAB^\top\|_F^2 + \lambda \|AB^\top\|_F^2$ — invariant to diagonal scaling D
+  - **Eq.2**: $\min_{A,B} \|X - XAB^\top\|_F^2 + \lambda(\|XA\|_F^2 + \|B\|_F^2)$ — unique solution
+- For Eq.1: if $\hat{A}\hat{B}^\top$ is a solution, so is $\hat{A}D \cdot D^{-1}\hat{B}^\top$ for any invertible diagonal D
+- **Cosine similarity is arbitrary** under D. **User-item dot product is invariant**: $\langle u^{(D)}, v^{(D)} \rangle = \langle u, v \rangle$
+- Netflix recommends dot products — but is silent on compression
+
+### 2.2 The Compression Question
+- At billion-item scale, full-precision embeddings require ~200GB (d=50, float32, 1B items)
+- 2-3 bit compression reduces this to ~20-30GB (single GPU)
+- Two paradigms for dot product estimation from compressed vectors:
+  - **MSE-optimal**: Minimize reconstruction error (Lloyd-Max quantization). No unbiasedness guarantee.
+  - **Unbiased**: TurboQuant — sacrifices some MSE for a formal $\mathbb{E}[\hat{s}] = s$ guarantee.
+
+### 2.3 TurboQuant's Unbiasedness Guarantee
+TurboQuant quantizes items (one-sided); user queries remain full-precision:
+$$\mathbb{E}[\langle u, \text{DeQuant}(Q(v)) \rangle] = \langle u, v \rangle \quad \text{(exactly unbiased, Theorem 2)}$$
+
+Combined with Netflix's D-invariance:
 $$\mathbb{E}[\langle u^{(D)}, \text{DeQuant}(Q(v^{(D)})) \rangle] = \langle u^{(D)}, v^{(D)} \rangle = \langle u, v \rangle$$
 
-The compressed estimator preserves D-invariance **in expectation over quantization randomness** at 2-3 bits/value.
-
-### 3.2 Variance Depends on κ(D) - The Prescriptive Link
-The variance of the quantized inner product depends on **both** the query norm and the quantized item norm:
-$$\text{Var}[\langle u^{(D)}, \hat{v}^{(D)} \rangle] \leq \frac{\sqrt{3}\pi^2}{d} \cdot 4^{-b} \cdot \|u^{(D)}\|^2 \cdot \|v^{(D)}\|^2 = \frac{\sqrt{3}\pi^2}{d} \cdot 4^{-b} \cdot \|uD\|^2 \cdot \|vD^{-1}\|^2$$
-
-Under D-scaling with condition number $\kappa(D) = d_{\max}/d_{\min}$:
-$$\|uD\| \leq d_{\max}\|u\|, \quad \|vD^{-1}\| \leq d_{\min}^{-1}\|v\|$$
-
-So variance is bounded by $O(\kappa(D)^2 \cdot \|u\|^2\|v\|^2 / d \cdot 4^{-b})$.
-
-Note: $\kappa(D)$ is a worst-case bound. Actual variance depends on the specific alignment of $u,v$ with D's eigenvectors, i.e., $\|uD\|^2 \cdot \|vD^{-1}\|^2$ rather than just $\kappa(D)^2$.
-
-This creates a **prescriptive connection** to Netflix's Eq.2 regularization:
-- **Eq.2 controls both factors**: the $\|XA\|_F^2$ term bounds user norms $\|u\|^2$, and the $\|B\|_F^2$ term bounds item norms $\|v\|^2$
-- This is strictly stronger than Eq.1, which leaves both norms unconstrained under D-rescaling
-- If compression variance is a first-order concern, Eq.2-style norm control provides a cleaner variance regime than Eq.1's rescaling ambiguity
-- By AM-GM, penalizing the sum of squared norms ($\|u\|^2 + \|v\|^2$) bounds their product ($\|u\|^2 \cdot \|v\|^2$), which is exactly the variance pre-factor
-
-### 3.3 MSE Preservation (TurboQuant Theorem 1)
-$$\mathbb{E}[\|x - Q_{\text{mse}}(x)\|^2] \leq \frac{\pi\sqrt{3}}{2} \cdot 4^{-b}$$
-Unlike cosine normalization, TurboQuant does not explicitly discard norm information; its MSE guarantee provides controlled reconstruction error of the original vector.
+Variance bound: $\text{Var} \leq O(\|u^{(D)}\|^2 \cdot \|v^{(D)}\|^2 / d \cdot 4^{-b})$
 
 ---
 
-## 4. Experiments (1 page)
+## 3. The Bias-Variance Tradeoff (1 page)
 
-### 4.1 Synthetic Data (Netflix Section 4 Setup)
-Following Netflix's synthetic setup:
-- n=20,000 users, p=1,000 items, C=5 clusters with known ground truth
-- Power-law item popularity ($\beta_{\text{item}} \in [0.25, 1.5]$) and user activity ($\beta_{\text{user}} = 0.5$)
-- Dirichlet(1,...,1) user-cluster preferences
-- Train with Eq.1 ($\lambda=10{,}000$) and Eq.2 ($\lambda=100$), $k=50$
-- D-scalings derived from SVD of learned B (matching Netflix Figure 1 methodology)
-- Our implementation uses clean-room TurboQuant code from the paper (we identified a scaling bug in the reference library; see Appendix)
+### 3.1 MSE-Only Bias is Monotonic
+We find empirically that MSE-only quantization produces a nearly perfectly multiplicative bias:
+$$\hat{s}_{\text{MSE}} \approx \alpha \cdot s_{\text{true}} + \beta, \quad \alpha \approx 0.89 \text{ (2-bit)}, \quad \alpha \approx 0.97 \text{ (3-bit)}, \quad \beta \approx 0$$
 
-### 4.2 Figure 1: TurboQuant vs MSE-Only Scatter (3 rows × 4 columns)
-- Layout: rows = κ(D) ∈ {1, 18, 311}; columns = TQ 2-bit, MSE-only 2-bit, TQ 3-bit, MSE-only 3-bit
-- Each dot = one (user, item) pair; y-axis = MC mean estimate over 100 seeds; x-axis = true ⟨u, v⟩
-- 2-bit results lead (stronger compression story: 10× reduction)
-- **Key observations**:
-  - TQ (blue): points cluster on y=x at all κ values — unbiased
-  - MSE-only (red): points systematically below y=x — biased, underestimates scores
-  - Left→right: same bit-width, TQ vs MSE-only side-by-side for direct comparison
-  - Top→bottom: κ grows, all methods spread, but only TQ stays centered
-  - At high κ, TQ’s error distribution is visibly heteroscedastic and positively skewed: pairs with larger true scores have proportionally more variance (since Var ∝ ‖u‖²·‖v‖²), and the non-negative score support compresses the downward tail while the upward tail extends freely. Despite this skewness, the mean estimate remains unbiased.
+**Why**: Lloyd-Max centroids for Gaussian-like marginals shrink coordinates toward zero. After random rotation, each coordinate's reconstruction undershoots proportionally. The rotation distributes this uniformly across all directions, making the total shrinkage approximately multiplicative on the dot product.
 
-### 4.4 Table 1: Quantitative Results
-D-scaling via $D = \text{diag}(e^{tz_1}, \ldots, e^{tz_k})$, $t \in \{0, 0.5, 1, 2\}$, 200 users × 50 items = 10,000 pairs, 100 MC seeds.
+**Consequence for ranking**: Monotonic transformations preserve orderings. If all scores shrink by the same factor, top-K retrieval is unaffected.
 
-| κ(D) | True ⟨u,v⟩ | TQ 3-bit Mean ± SEM | TQ Bias | TQ Var | MSE-only Bias | MSE-only Var |
-|------|-----------|---------------------|---------|--------|---------------|-------------|
-| 1 | 0.0377 | 0.0376 ± 0.00002 | -0.0001 | 3.2e-4 | -0.0043 | 1.9e-4 |
-| 18 | 0.0377 | 0.0376 ± 0.00005 | -0.0001 | 1.7e-3 | -0.0043 | 9.9e-4 |
-| 311 | 0.0377 | 0.0382 ± 0.0003 | +0.0005 | 9.4e-2 | -0.0049 | 4.9e-2 |
-| 97K | 0.0377 | 0.187 ± 0.048 | +0.149* | 2.9e+3 | -0.691 | 1.8e+3 |
+### 3.2 TQ Variance Costs Ranking Quality
+TurboQuant's QJL correction eliminates bias but adds variance. In a single deployed index (one random seed):
+- Each item's reconstructed vector has a random perturbation from truth
+- These perturbations are independent across items
+- For closely-scored items, the perturbation can exceed the score gap → rank inversions
 
-*At κ=97K, the apparent "bias" is Monte Carlo noise from enormous variance (SEM ≈ 0.048), not genuine bias.
+**Empirical ranking results (single-seed Recall@10, 500 users × 200 items, 50 seeds):**
 
-Key findings:
-1. True dot product is constant across all κ - D-invariant ✓
-2. TQ bias is statistically indistinguishable from zero for κ ≤ 311 ✓
-3. MSE-only has persistent, significant negative bias at every κ ✗
-4. Variance grows with κ as predicted by the bound ✓
-5. 3-bit variance is ~4× lower than 2-bit, matching 4^{-b} scaling ✓
+| κ(D) | TQ 2-bit | MSE 2-bit | TQ 3-bit | MSE 3-bit |
+|------|----------|-----------|----------|-----------|
+| 1 | 0.795 | **0.871** | 0.861 | **0.921** |
+| 7.5 | 0.670 | **0.801** | 0.780 | **0.883** |
+| 56 | 0.330 | **0.506** | 0.468 | **0.682** |
+
+MSE-only wins ranking at every operating point. The gap widens with κ (more variance from D-scaling).
+
+**Single-seed Spearman correlation:**
+
+| κ(D) | TQ 2-bit | MSE 2-bit | TQ 3-bit | MSE 3-bit |
+|------|----------|-----------|----------|-----------|
+| 1 | 0.781 | **0.903** | 0.883 | **0.965** |
+| 7.5 | 0.623 | **0.801** | 0.770 | **0.913** |
+| 56 | 0.266 | **0.462** | 0.419 | **0.662** |
+
+### 3.3 When Unbiasedness Wins
+TQ's unbiasedness is critical when absolute score values matter (not just ordering):
+
+1. **CTR/Conversion prediction** — score = P(click). 11% shrinkage → systematically wrong predictions
+2. **Ad auction bidding** — bid = P(conversion) × payout. Underbid by 11% → lost revenue
+3. **Score thresholding** — "recommend if score > 0.5". Boundary items filtered incorrectly
+4. **Multi-model blending** — shrinkage distorts blend weights across heterogeneous models
+5. **Explore/exploit (bandits)** — miscalibrated confidence intervals → suboptimal exploration
+6. **A/B testing** — systematic score distortion confounds measured treatment effects
+
+### 3.4 The Prescriptive Link to Eq.2
+Regardless of which quantizer is chosen, variance scales with $\|u\|^2 \cdot \|v\|^2$. Netflix's Eq.2 regularization ($\|XA\|_F^2 + \|B\|_F^2$) directly bounds these norms, providing variance control. This motivates:
+- Use Eq.2-style weight decay if you plan to quantize (either method)
+- Eq.1's unbounded D-scaling can make BOTH methods degrade (κ > 50 hurts both)
 
 ---
 
-## 5. Discussion & Next Steps (0.25 page)
-- **Contribution**: Netflix identified the correct similarity measure (dot product); we show TurboQuant provides a near-optimal compressed estimator that preserves it in expectation, and we characterize its variance under rescaling. The theoretical observation is a corollary of two existing results; the contribution is making the connection explicit, providing the prescriptive Eq.2 link, and validating experimentally with an MSE-only ablation.
-- **Practical guidance**: If compression variance is a first-order concern, prefer Eq.2-style weight decay - it bounds the norm product that drives quantization variance.
-- **Limitation**: Our theory is for linear MF with closed-form solutions. Production systems use deep two-tower models where D-scaling holds only approximately. Netflix's Section 5 argues the problem is likely *worse* in deep models - TurboQuant's formal guarantees provide a hedge against this opacity.
-- **Limitation**: Unbiasedness is in expectation over quantizer randomness. A single instantiated quantizer (one seed) may produce biased estimates for individual pairs.
-- **Limitation**: One-sided compression (items quantized, users full-precision) matches asymmetric serving but does not address symmetric item-item retrieval.
-- **Limitation**: $d=50$ is lower than production dimensions (128-512). TQ variance scales as $1/d$, so results improve at production scale.
-- **Implementation note**: We identified a scaling bug in the reference TurboQuant library (`back2matching/turboquant`) where the QJL dequantization coefficient is incorrect. Our experiments use a clean-room implementation verified against the paper's theorems. Bug report filed.
-- **Lead into Paper 2**: TurboQuant's data-oblivious design (no codebook retraining) enables real-time incremental item addition - a separate contribution explored in follow-up work.
-- **Reproducibility**: Code at https://github.com/2x11-xyz/turboquant-netflix-paper1
+## 4. Experiments (0.75 page)
+
+### 4.1 Setup
+Following Netflix's synthetic data (Section 4):
+- n=20,000 users, p=1,000 items, C=5 clusters, k=50
+- Power-law popularity/activity, Dirichlet user preferences
+- D-scalings: $D = \text{diag}(e^{tz})$, $t \in \{0, 0.5, 1\}$, giving κ ∈ {1, 7.5, 56}
+- 50 random quantizer seeds per operating point
+- Clean-room TurboQuant implementation (reference library has a scaling bug)
+
+### 4.2 Figure 1: Scatter Plots (3 rows × 4 columns)
+- Rows: κ ∈ {1, 7.5, 56}
+- Columns: TQ 2-bit, MSE-only 2-bit, TQ 3-bit, MSE-only 3-bit
+- Each dot = one (user, item) pair; y-axis = MC mean over 100 seeds; x = true score
+- TQ (blue): centered on y=x. MSE-only (red): systematically below y=x
+- Demonstrates unbiasedness visually, but also shows TQ's greater spread
+- Note: At high κ, TQ's error is heteroscedastic and positively skewed (Var ∝ ‖u‖²·‖v‖², non-negative support compresses downward tail)
+
+### 4.3 Table 1: Bias-Variance Summary
+| Method | Bits | Bias | Variance | Recall@10 (κ=1) | Recall@10 (κ=56) |
+|--------|------|------|----------|-----------------|-------------------|
+| TQ | 2 | ~0 | 1.0e-3 | 0.795 | 0.330 |
+| MSE-only | 2 | -0.004 | 1.9e-4 | 0.871 | 0.506 |
+| TQ | 3 | ~0 | 3.2e-4 | 0.861 | 0.468 |
+| MSE-only | 3 | -0.001 | 6.7e-5 | 0.921 | 0.682 |
+
+### 4.4 Monotonicity Verification
+- Linear fit: MSE_estimate ≈ α·true + β with α ∈ {0.89, 0.97}, β ≈ 0
+- Pairwise inversion rate: MSE-only ~2-4% vs TQ ~4-7% (at κ=1)
+- MSE-only bias is almost perfectly ranking-preserving
+
+---
+
+## 5. Discussion (0.5 page)
+
+### 5.1 Practical Guidance
+- **For top-K retrieval**: Use MSE-only quantization. Lower variance → better rankings. The monotonic bias doesn't affect which items appear in your top-K.
+- **For score-dependent decisions**: Use TQ. CTR prediction, bid pricing, thresholding, blending, A/B testing — anywhere the absolute score value feeds into a downstream computation.
+- **Hybrid architecture**: Use MSE-only for ANN candidate retrieval (top-100), then re-score top candidates with TQ (or full precision) for calibrated final scores.
+
+### 5.2 The Role of Eq.2
+- Both methods degrade with large κ (D-scaling stretches variance for all quantizers)
+- Eq.2's norm regularization bounds variance regardless of quantizer choice
+- Practical recommendation: if you plan to quantize item embeddings, prefer Eq.2-style training or explicit norm regularization
+
+### 5.3 Limitations
+- Theory is for linear MF. Deep two-tower models have approximate D-scaling; TQ's formal guarantee still holds but the Netflix invariance argument is weaker.
+- Unbiasedness is over quantizer randomness; single deployment is one draw.
+- d=50 is lower than production (128-512). TQ variance scales as 1/d, so the ranking gap narrows at production scale.
+- One-sided compression only (items quantized, not users).
+- Synthetic data only; no real-world retrieval benchmark.
+
+### 5.4 Future Work
+- Paper 2: TurboQuant's data-oblivious design enables incremental item addition without codebook retraining
+- Production-scale evaluation at d=128-512 (where variance gap narrows)
+- Hybrid retrieval pipeline evaluation (MSE-only ANN + TQ re-scoring)
 
 ---
 
 ## References
-1. Netflix: arXiv:2403.05440 - Is Cosine-Similarity of Embeddings Really About Similarity?
-2. TurboQuant: arXiv:2504.19874 - Online Vector Quantization with Near-optimal Distortion Rate
-3. QJL: arXiv:2406.03482 - QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead
-4. Product Quantization: Jégou et al. (2011) - Product quantization for nearest neighbor search
-5. RaBitQ: Gao & Long (2024) - RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound
+1. Netflix: arXiv:2403.05440 — Is Cosine-Similarity of Embeddings Really About Similarity?
+2. TurboQuant: arXiv:2504.19874 — Online Vector Quantization with Near-optimal Distortion Rate
+3. QJL: arXiv:2406.03482 — QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead
+4. Product Quantization: Jégou et al. (2011) — Product quantization for nearest neighbor search
+5. RaBitQ: Gao & Long (2024) — RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound
