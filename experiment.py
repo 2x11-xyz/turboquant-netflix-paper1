@@ -13,12 +13,12 @@ image = (
     modal.Image.debian_slim()
     .pip_install(
         "torch",
-        "numpy<2",       # turboquant uses np.trapz, removed in numpy 2
+        "numpy",
         "matplotlib",
         "seaborn",
         "scipy",
-        "turboquant",    # exports TurboQuantIP (one-sided unbiased IP estimator)
     )
+    .add_local_file("turboquant_impl.py", "/root/turboquant_impl.py")
 )
 volume = modal.Volume.from_name("turboquant-netflix-results", create_if_missing=True)
 
@@ -176,8 +176,9 @@ def generate_figure1(B_eq1, B_eq2, item_clusters, lam_eq1):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    import warnings
-    from turboquant import TurboQuantIP
+    import sys
+    sys.path.insert(0, "/root")
+    from turboquant_impl import TurboQuantIP
 
     sort_idx = sort_items_by_cluster(item_clusters)
 
@@ -206,9 +207,7 @@ def generate_figure1(B_eq1, B_eq2, item_clusters, lam_eq1):
         """Compute p×p TQ-quantized dot product matrix, averaged over seeds."""
         accum = np.zeros((N_ITEMS, N_ITEMS), dtype=np.float64)
         for seed in range(n_seeds):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                tq = TurboQuantIP(dim=K, bits=bits, device='cpu', seed=seed)
+            tq = TurboQuantIP(dim=K, bits=bits, seed=seed)
             mse_idx, norms, qjl_signs, res_norms = tq.quantize(B_scaled)
             B_deq = tq.dequantize(mse_idx, norms, qjl_signs, res_norms)
             # One-sided: use dequantized items as both arguments for item-item
@@ -296,8 +295,9 @@ def compute_quantitative_results(A_eq1, B_eq1, X_torch):
     """
     import torch
     import numpy as np
-    import warnings
-    from turboquant import TurboQuantIP
+    import sys
+    sys.path.insert(0, "/root")
+    from turboquant_impl import TurboQuantIP
 
     torch.manual_seed(99)
     z = torch.randn(K)
@@ -343,9 +343,7 @@ def compute_quantitative_results(A_eq1, B_eq1, X_torch):
             pair_dots = []  # list of lists: [seed1_dots, seed2_dots, ...]
 
             for seed in range(M_SEEDS):
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", DeprecationWarning)
-                    tq = TurboQuantIP(dim=K, bits=b, device='cpu', seed=seed)
+                tq = TurboQuantIP(dim=K, bits=b, seed=seed)
 
                 mse_idx, norms, qjl_signs, res_norms = tq.quantize(item_emb_s)
                 item_deq = tq.dequantize(mse_idx, norms, qjl_signs, res_norms)
