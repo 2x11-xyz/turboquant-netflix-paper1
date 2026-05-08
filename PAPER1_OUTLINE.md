@@ -94,7 +94,7 @@ Following Netflix's synthetic setup:
 - Each dot = one (user, item) pair; y-axis = MC mean estimate over 100 seeds; x-axis = true ⟨u, v⟩
 - Top row: TurboQuant 3-bit estimates at κ(D) ∈ {1, 18, 311}
 - Bottom row: MSE-only baseline (same quantizer, no QJL residual correction) at same κ values
-- **Key observation**: TQ points cluster tightly on y=x at low κ and spread symmetrically with increasing κ (unbiased, growing variance). MSE-only points are systematically below y=x at all κ values (biased, scores underestimated).
+- **Key observation**: TQ points cluster tightly on y=x at low κ and spread with increasing κ (unbiased, growing variance). MSE-only points are systematically below y=x at all κ values (biased, scores underestimated). At high κ, TQ's error distribution is visibly heteroscedastic and positively skewed: pairs with larger true scores have proportionally more variance (since Var ∝ ‖u‖²·‖v‖²), and the non-negative score support compresses the downward tail while the upward tail extends freely. Despite this skewness, the mean estimate remains unbiased.
 
 **Figure 2B — Bias and variance vs κ(D):**
 - Left panel: Mean bias with 95% CI for TQ and MSE-only at 2-bit and 3-bit

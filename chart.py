@@ -186,43 +186,42 @@ def generate_charts():
 
         print(f"  t={t}, κ={kappa:.1f}")
 
-    # --- Figure 2A: Scatter (true vs TQ estimate) ---
-    # Show t=0 and t=1 side by side, 3-bit TQ vs MSE-only
-    fig2, axes2 = plt.subplots(2, 3, figsize=(12, 7.5))
+    # --- Figure 2A: 3×4 Scatter (transposed: rows=κ, cols=method) ---
+    fig2, axes2 = plt.subplots(3, 4, figsize=(10, 7.5))
 
     scatter_ts = [0, 0.5, 1]
-    for col, t in enumerate(scatter_ts):
+    col_configs = [
+        ("tq_3bit_mean",  "TQ 3-bit",      "steelblue"),
+        ("tq_2bit_mean",  "TQ 2-bit",      "cornflowerblue"),
+        ("mse_3bit_mean", "MSE-only 3-bit", "indianred"),
+        ("mse_2bit_mean", "MSE-only 2-bit", "lightsalmon"),
+    ]
+
+    for row, t in enumerate(scatter_ts):
         r = results[t]
         true = r["true_dots"]
-        tq3 = r["tq_3bit_mean"]
-        mse3 = r["mse_3bit_mean"]
 
-        # TQ scatter (top row)
-        ax = axes2[0, col]
-        ax.scatter(true, tq3, s=0.3, alpha=0.3, c="steelblue", rasterized=True)
-        ax.plot([0, 1], [0, 1], 'k-', lw=0.8, alpha=0.5)
-        bias = (tq3 - true).mean()
-        ax.set_title(f"TQ 3-bit | κ={r['kappa']:.0f}\nbias={bias:.4f}", fontsize=9)
-        ax.set_xlabel("True ⟨u, v⟩", fontsize=8)
-        if col == 0: ax.set_ylabel("TQ estimate E[⟨u, ṽ⟩]", fontsize=9)
-        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        ax.set_aspect('equal')
-        ax.tick_params(labelsize=7)
+        for col, (key, label, color) in enumerate(col_configs):
+            ax = axes2[row, col]
+            est = r[key]
+            bias = (est - true).mean()
 
-        # MSE-only scatter (bottom row)
-        ax = axes2[1, col]
-        ax.scatter(true, mse3, s=0.3, alpha=0.3, c="indianred", rasterized=True)
-        ax.plot([0, 1], [0, 1], 'k-', lw=0.8, alpha=0.5)
-        bias_mse = (mse3 - true).mean()
-        ax.set_title(f"MSE-only 3-bit | κ={r['kappa']:.0f}\nbias={bias_mse:.4f}", fontsize=9)
-        ax.set_xlabel("True ⟨u, v⟩", fontsize=8)
-        if col == 0: ax.set_ylabel("MSE-only estimate", fontsize=9)
-        ax.set_xlim(0, 1); ax.set_ylim(0, 1)
-        ax.set_aspect('equal')
-        ax.tick_params(labelsize=7)
+            ax.scatter(true, est, s=0.3, alpha=0.3, c=color, rasterized=True)
+            ax.plot([0, 1], [0, 1], 'k-', lw=0.8, alpha=0.5)
+            ax.set_title(f"{label} | κ={r['kappa']:.0f}\nbias={bias:.4f}", fontsize=8)
+            ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+            ax.set_aspect('equal')
+            ax.tick_params(labelsize=6)
+
+            if row == 0:
+                pass  # title already has method name
+            if col == 0:
+                ax.set_ylabel(f"κ={r['kappa']:.0f}\nestimate", fontsize=8)
+            if row == 2:
+                ax.set_xlabel("True ⟨u, v⟩", fontsize=7)
 
     fig2.suptitle(
-        "Figure 2A: TurboQuant (unbiased) vs MSE-Only (biased) Inner Product Estimates\n"
+        "TurboQuant vs MSE-Only Inner Product Estimates\n"
         "Each dot = one (user, item) pair, MC mean over 100 seeds",
         fontsize=11, fontweight="bold")
     fig2.tight_layout()
