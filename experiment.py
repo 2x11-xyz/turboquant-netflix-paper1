@@ -11,7 +11,7 @@ image = (
     modal.Image.debian_slim()
     .pip_install(
         "torch",
-        "numpy",
+        "numpy<2",
         "pandas",
         "matplotlib",
         "seaborn",
