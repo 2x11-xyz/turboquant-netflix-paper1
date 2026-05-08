@@ -184,6 +184,48 @@ class TurboQuantIP:
 
         return x_hat
 
+class MSEOnlyQuantizer:
+    """
+    MSE-only baseline: random rotation + Lloyd-Max scalar quantization.
+    Uses ALL b bits for MSE (no QJL correction). This is biased for
+    inner products because Lloyd-Max centroids shrink coordinates toward
+    zero, causing reconstructed vectors to have smaller norms.
+
+    This is the fair baseline for comparing against TurboQuantIP, which
+    uses b-1 bits for MSE and 1 bit for QJL.
+    """
+
+    def __init__(self, dim: int, bits: int = 3, seed: int = 42):
+        self.dim = dim
+        self.bits = bits
+
+        gen = torch.Generator().manual_seed(seed)
+        self.Pi = _random_orthogonal(dim, gen)
+        self.Pi_T = self.Pi.T
+
+        self.codebook = _lloyd_max_codebook(dim, bits)
+        self._boundaries = torch.tensor(
+            np.concatenate([
+                [-np.inf],
+                ((self.codebook[:-1] + self.codebook[1:]) / 2).numpy(),
+                [np.inf],
+            ]),
+            dtype=torch.float32,
+        )
+
+    def quantize(self, x: torch.Tensor):
+        norms = x.norm(dim=1, keepdim=True)
+        x_unit = x / norms.clamp(min=1e-10)
+        x_rot = x_unit @ self.Pi_T
+        mse_indices = torch.bucketize(x_rot, self._boundaries[1:-1])
+        return mse_indices, norms
+
+    def dequantize(self, mse_indices, norms):
+        x_mse = self.codebook[mse_indices]
+        x_unrot = x_mse @ self.Pi
+        return x_unrot * norms
+
+
     def estimate_ip(self, queries, mse_indices, norms, qjl_signs, residual_norms):
         """
         Compute unbiased inner product estimates: E[result] = queries @ items.T

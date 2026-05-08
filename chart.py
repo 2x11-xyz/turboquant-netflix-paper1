@@ -29,7 +29,7 @@ def generate_charts():
     import numpy as np
     import sys
     sys.path.insert(0, "/root")
-    from turboquant_impl import TurboQuantIP
+    from turboquant_impl import TurboQuantIP, MSEOnlyQuantizer
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -155,6 +155,7 @@ def generate_charts():
 
         for bits in [2, 3]:
             for seed in range(N_SEEDS):
+                # TurboQuant (b-1 bits MSE + 1 bit QJL = b bits total)
                 tq = TurboQuantIP(dim=K, bits=bits, seed=seed)
                 q = tq.quantize(V_s)
                 V_deq = tq.dequantize(*q)
@@ -162,13 +163,11 @@ def generate_charts():
                 est = (U_sub @ V_deq_sub.T).numpy().ravel()
                 tq_estimates[bits].append(est)
 
-                # MSE-only baseline (no QJL correction)
-                # Reconstruct only the MSE part: codebook lookup + un-rotate + rescale
-                mse_idx, norms, _, _ = q
-                x_mse = tq.codebook[mse_idx]  # (N_ITEMS, K) in rotated space
-                x_mse_unrot = x_mse @ tq.Pi   # back to original space
-                x_mse_full = x_mse_unrot * norms  # rescale by norms
-                V_mse_sub = x_mse_full[item_idx]
+                # Fair MSE-only baseline (all b bits for MSE, no QJL)
+                mse_q = MSEOnlyQuantizer(dim=K, bits=bits, seed=seed)
+                mse_idx, norms = mse_q.quantize(V_s)
+                V_mse = mse_q.dequantize(mse_idx, norms)
+                V_mse_sub = V_mse[item_idx]
                 est_mse = (U_sub @ V_mse_sub.T).numpy().ravel()
                 mse_estimates[bits].append(est_mse)
 
