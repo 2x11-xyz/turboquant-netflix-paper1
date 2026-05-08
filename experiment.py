@@ -87,7 +87,7 @@ def generate_synthetic_data(seed=42):
                             replace=False, p=p_ui[u])
         X[u, chosen] = 1.0
 
-    return X, item_clusters
+    return X, item_clusters, user_cluster_pref
 
 
 def sort_items_by_cluster(item_clusters):
@@ -165,33 +165,60 @@ def get_D_scalings(B, lam):
 # Figure generation
 # ---------------------------------------------------------------------------
 
-def generate_figure1(B_eq1, B_eq2, item_clusters, lam_eq1):
+N_SAMPLE_USERS = 300  # users to show in user-item heatmap
+TQ_FIGURE_SEEDS = 20  # seeds for Monte Carlo mean in figure
+
+
+def generate_figure1(A_eq1, B_eq1, A_eq2, B_eq2, X_torch, item_clusters, user_cluster_pref, lam_eq1):
     """
-    Replicate Netflix Figure 1 + add TurboQuant row.
-    Row 1: True clusters | cosSim under 3 D-scalings (Eq.1) | cosSim Eq.2
-    Row 2: TQ dot product under same D-scalings | TQ dot product Eq.2
+    Three-row figure:
+    Row 1: Item-item cosine similarity under D-scalings (Netflix Figure 1 replication)
+    Row 2: User-item score matrix U^(D)·V^(D)^T — the TRUE D-invariant quantity
+    Row 3: TQ compressed user-item scores U^(D)·Ṽ^(D)^T — averaged over seeds
     """
     import torch
     import numpy as np
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.gridspec import GridSpec
     import sys
     sys.path.insert(0, "/root")
     from turboquant_impl import TurboQuantIP
 
-    sort_idx = sort_items_by_cluster(item_clusters)
+    item_sort = sort_items_by_cluster(item_clusters)
 
-    # --- Ground truth cluster similarity matrix ---
-    true_sim = np.zeros((N_ITEMS, N_ITEMS), dtype=np.float32)
-    for i in range(N_ITEMS):
-        for j in range(N_ITEMS):
-            if item_clusters[i] == item_clusters[j]:
-                true_sim[i, j] = 1.0
-    true_sim_sorted = true_sim[np.ix_(sort_idx, sort_idx)]
+    # --- Select and sort users by dominant cluster preference ---
+    dominant_cluster = np.argmax(user_cluster_pref, axis=1)  # (N_USERS,)
+    # Sample N_SAMPLE_USERS users, stratified by cluster
+    rng = np.random.RandomState(123)
+    selected_users = []
+    per_cluster = N_SAMPLE_USERS // C
+    for c in range(C):
+        candidates = np.where(dominant_cluster == c)[0]
+        chosen = rng.choice(candidates, min(per_cluster, len(candidates)), replace=False)
+        selected_users.append(chosen)
+    selected_users = np.concatenate(selected_users)
+    # Sort by dominant cluster, then by preference strength within cluster
+    user_sort_keys = [(dominant_cluster[u], -user_cluster_pref[u, dominant_cluster[u]]) for u in selected_users]
+    user_order = sorted(range(len(selected_users)), key=lambda i: user_sort_keys[i])
+    user_idx = selected_users[user_order]  # final sorted user indices
+    n_users_show = len(user_idx)
+
+    # --- Ground truth block matrix (for reference column) ---
+    true_block = np.zeros((n_users_show, N_ITEMS), dtype=np.float32)
+    for ui, u in enumerate(user_idx):
+        for vi, v in enumerate(range(N_ITEMS)):
+            if dominant_cluster[u] == item_clusters[v]:
+                true_block[ui, vi] = 1.0
+    true_block_sorted = true_block[:, item_sort]
 
     # --- D-scalings for Eq.1 ---
     scalings = get_D_scalings(B_eq1, lam_eq1)
+    scaling_names = list(scalings.keys())
+
+    # --- Precompute all user embeddings (full precision) ---
+    U_full = X_torch @ A_eq1  # (N_USERS, K)
 
     def cosine_sim_matrix(B_scaled):
         """Compute p×p item-item cosine similarity matrix."""
@@ -199,81 +226,122 @@ def generate_figure1(B_eq1, B_eq2, item_clusters, lam_eq1):
         B_normed = B_scaled / norms
         return (B_normed @ B_normed.T).numpy()
 
-    def dot_product_matrix(B_scaled):
-        """Compute p×p item-item dot product matrix."""
-        return (B_scaled @ B_scaled.T).numpy()
+    def user_item_score_matrix(U_scaled, V_scaled):
+        """Compute user-item score matrix for selected users."""
+        scores = (U_scaled[user_idx] @ V_scaled.T).numpy()  # (n_users_show, N_ITEMS)
+        return scores
 
-    def tq_dot_product_matrix(B_scaled, bits=3, n_seeds=10):
-        """Compute p×p TQ-quantized dot product matrix, averaged over seeds."""
-        accum = np.zeros((N_ITEMS, N_ITEMS), dtype=np.float64)
+    def tq_user_item_score_matrix(U_scaled, V_scaled, bits=3, n_seeds=TQ_FIGURE_SEEDS):
+        """One-sided TQ: quantize items, dot with full-precision users. MC mean."""
+        accum = np.zeros((n_users_show, N_ITEMS), dtype=np.float64)
         for seed in range(n_seeds):
             tq = TurboQuantIP(dim=K, bits=bits, seed=seed)
-            mse_idx, norms, qjl_signs, res_norms = tq.quantize(B_scaled)
-            B_deq = tq.dequantize(mse_idx, norms, qjl_signs, res_norms)
-            # One-sided: use dequantized items as both arguments for item-item
-            # This shows whether the *structure* is preserved, not exact values
-            accum += (B_deq @ B_deq.T).numpy()
+            q = tq.quantize(V_scaled)
+            V_deq = tq.dequantize(*q)
+            accum += (U_scaled[user_idx] @ V_deq.T).numpy()
         return accum / n_seeds
 
-    # Compute all cosine similarity matrices (Eq.1 D-scalings)
-    scaling_names = list(scalings.keys())
+    # --- Compute matrices for each D-scaling ---
     cos_matrices = {}
-    tq_matrices = {}
-    for name, D in scalings.items():
-        B_scaled = B_eq1 @ D
-        cos_matrices[name] = cosine_sim_matrix(B_scaled)
-        tq_matrices[name] = tq_dot_product_matrix(B_scaled, bits=3, n_seeds=20)
+    score_matrices = {}
+    tq_score_matrices = {}
 
-    # Eq.2 (unique solution)
+    for name, M in scalings.items():
+        M_inv = torch.diag(1.0 / torch.diag(M).clamp(min=1e-10))
+        B_scaled = B_eq1 @ M        # items: B·M (the scaling returned by get_D_scalings)
+        U_scaled = U_full @ M_inv   # users: U·M^{-1} so that ⟨U·M^{-1}, B·M⟩ = ⟨U, B⟩
+
+        cos_matrices[name] = cosine_sim_matrix(B_scaled)
+        score_matrices[name] = user_item_score_matrix(U_scaled, B_scaled)
+        tq_score_matrices[name] = tq_user_item_score_matrix(U_scaled, B_scaled, bits=3)
+        print(f"  Computed D-scaling: {name}")
+
+    # Eq.2 (unique solution, no D-scaling)
+    U_eq2 = X_torch @ A_eq2
     cos_eq2 = cosine_sim_matrix(B_eq2)
-    tq_eq2 = tq_dot_product_matrix(B_eq2, bits=3, n_seeds=20)
-    dot_eq2 = dot_product_matrix(B_eq2)
+    score_eq2 = user_item_score_matrix(U_eq2, B_eq2)
+    tq_score_eq2 = tq_user_item_score_matrix(U_eq2, B_eq2, bits=3)
+    print("  Computed Eq.2")
+
+    # --- Compute shared color scales per row ---
+    # Row 2 (scores): all D-scalings should be identical, use global range
+    all_scores = [score_matrices[n][:, item_sort] for n in scaling_names]
+    all_scores.append(score_eq2[:, item_sort])
+    score_vmin = np.percentile(np.concatenate([s.ravel() for s in all_scores]), 2)
+    score_vmax = np.percentile(np.concatenate([s.ravel() for s in all_scores]), 98)
+
+    # Row 3 (TQ scores): same scale as Row 2 for direct comparison
+    tq_vmin, tq_vmax = score_vmin, score_vmax
 
     # --- Build figure ---
-    n_cols = 1 + len(scaling_names) + 1  # true + scalings + eq2
-    fig, axes = plt.subplots(3, n_cols, figsize=(4 * n_cols, 11))
+    n_cols = 1 + len(scaling_names) + 1  # reference + scalings + eq2
+    fig, axes = plt.subplots(3, n_cols, figsize=(3.5 * n_cols, 10))
 
-    def plot_matrix(ax, mat, title, cmap="RdBu_r", vmin=None, vmax=None):
-        sorted_mat = mat[np.ix_(sort_idx, sort_idx)]
+    def plot_item_item(ax, mat, title, cmap="RdBu_r", vmin=None, vmax=None):
+        sorted_mat = mat[np.ix_(item_sort, item_sort)]
         if vmin is None:
             vmin = np.percentile(sorted_mat, 2)
         if vmax is None:
             vmax = np.percentile(sorted_mat, 98)
         ax.imshow(sorted_mat, cmap=cmap, vmin=vmin, vmax=vmax,
                   aspect='equal', interpolation='nearest')
-        ax.set_title(title, fontsize=9)
+        ax.set_title(title, fontsize=8)
         ax.set_xticks([])
         ax.set_yticks([])
 
-    # Row 0: Ground truth + Cosine similarities (Netflix replication)
-    plot_matrix(axes[0, 0], true_sim, "True Clusters", cmap="bone_r", vmin=0, vmax=1)
-    for i, name in enumerate(scaling_names):
-        plot_matrix(axes[0, 1 + i], cos_matrices[name], f"cosSim: {name}")
-    plot_matrix(axes[0, -1], cos_eq2, "cosSim: Eq.2 (unique)")
+    def plot_user_item(ax, mat, title, cmap="RdBu_r", vmin=None, vmax=None):
+        sorted_mat = mat[:, item_sort]  # users already sorted, sort items
+        im = ax.imshow(sorted_mat, cmap=cmap, vmin=vmin, vmax=vmax,
+                       aspect='auto', interpolation='nearest')
+        ax.set_title(title, fontsize=8)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return im
 
-    # Row 1: Raw dot products under same scalings (should all look the same)
-    plot_matrix(axes[1, 0], true_sim, "True Clusters", cmap="bone_r", vmin=0, vmax=1)
+    # --- Row 0: Item-item cosine similarity (Netflix replication) ---
+    true_sim = np.zeros((N_ITEMS, N_ITEMS), dtype=np.float32)
+    for i in range(N_ITEMS):
+        for j in range(N_ITEMS):
+            if item_clusters[i] == item_clusters[j]:
+                true_sim[i, j] = 1.0
+    plot_item_item(axes[0, 0], true_sim, "True Item Clusters", cmap="bone_r", vmin=0, vmax=1)
     for i, name in enumerate(scaling_names):
-        B_scaled = B_eq1 @ scalings[name]
-        dot_mat = dot_product_matrix(B_scaled)
-        plot_matrix(axes[1, 1 + i], dot_mat, f"dotProd: {name}")
-    plot_matrix(axes[1, -1], dot_eq2, "dotProd: Eq.2")
+        plot_item_item(axes[0, 1 + i], cos_matrices[name], f"cosSim: {name}")
+    plot_item_item(axes[0, -1], cos_eq2, "cosSim: Eq.2 (ref)")
 
-    # Row 2: TurboQuant quantized dot products (our contribution)
-    plot_matrix(axes[2, 0], true_sim, "True Clusters", cmap="bone_r", vmin=0, vmax=1)
+    # --- Row 1: User-item scores (D-invariant) ---
+    plot_user_item(axes[1, 0], true_block, "True User-Item Blocks",
+                   cmap="bone_r", vmin=0, vmax=1)
     for i, name in enumerate(scaling_names):
-        plot_matrix(axes[2, 1 + i], tq_matrices[name], f"TQ 3-bit: {name}")
-    plot_matrix(axes[2, -1], tq_eq2, "TQ 3-bit: Eq.2")
+        plot_user_item(axes[1, 1 + i], score_matrices[name],
+                       f"⟨u⁽ᴰ⁾, v⁽ᴰ⁾⟩: {name}",
+                       vmin=score_vmin, vmax=score_vmax)
+    plot_user_item(axes[1, -1], score_eq2, "⟨u, v⟩: Eq.2 (ref)",
+                   vmin=score_vmin, vmax=score_vmax)
 
-    # Row labels
-    axes[0, 0].set_ylabel("Cosine Similarity\n(Netflix Fig.1)", fontsize=11, fontweight="bold")
-    axes[1, 0].set_ylabel("Raw Dot Product\n(D-Invariant)", fontsize=11, fontweight="bold")
-    axes[2, 0].set_ylabel("TurboQuant 3-bit\n(Ours)", fontsize=11, fontweight="bold")
+    # --- Row 2: TQ compressed user-item scores ---
+    plot_user_item(axes[2, 0], true_block, "True User-Item Blocks",
+                   cmap="bone_r", vmin=0, vmax=1)
+    for i, name in enumerate(scaling_names):
+        plot_user_item(axes[2, 1 + i], tq_score_matrices[name],
+                       f"TQ 3-bit: {name}",
+                       vmin=tq_vmin, vmax=tq_vmax)
+    plot_user_item(axes[2, -1], tq_score_eq2, "TQ 3-bit: Eq.2 (ref)",
+                   vmin=tq_vmin, vmax=tq_vmax)
+
+    # --- Row labels ---
+    axes[0, 0].set_ylabel("Cosine Similarity\n(Netflix Fig.1)",
+                          fontsize=10, fontweight="bold")
+    axes[1, 0].set_ylabel("User-Item Scores\n(D-Invariant)",
+                          fontsize=10, fontweight="bold")
+    axes[2, 0].set_ylabel(f"TQ 3-bit Compressed\n(MC mean, {TQ_FIGURE_SEEDS} seeds)",
+                          fontsize=10, fontweight="bold")
 
     plt.suptitle(
-        "Netflix D-Scaling Arbitrariness × TurboQuant Quantized Dot Products\n"
-        f"(Synthetic: n={N_USERS:,}, p={N_ITEMS:,}, C={C}, K={K})",
-        fontsize=13, fontweight="bold"
+        "Netflix D-Scaling Arbitrariness × TurboQuant Compressed Scores\n"
+        f"(Synthetic: n={N_USERS:,}, p={N_ITEMS:,}, C={C}, K={K}; "
+        f"{n_users_show} users shown, sorted by cluster)",
+        fontsize=12, fontweight="bold"
     )
     plt.tight_layout()
     plt.savefig("/results/figure1_replication.png", dpi=200, bbox_inches="tight")
@@ -409,7 +477,7 @@ def run_experiments():
     import numpy as np
 
     print("Generating synthetic data (Netflix Section 4)...")
-    X_np, item_clusters = generate_synthetic_data(seed=42)
+    X_np, item_clusters, user_cluster_pref = generate_synthetic_data(seed=42)
     X_torch = torch.tensor(X_np)
     print(f"X: {X_torch.shape}, clusters: {np.bincount(item_clusters)}")
 
@@ -422,7 +490,7 @@ def run_experiments():
     print(f"  A: {A_eq2.shape}, B: {B_eq2.shape}")
 
     print("\nGenerating Figure 1 (Netflix replication + TQ extension)...")
-    generate_figure1(B_eq1, B_eq2, item_clusters, LAMBDA_EQ1)
+    generate_figure1(A_eq1, B_eq1, A_eq2, B_eq2, X_torch, item_clusters, user_cluster_pref, LAMBDA_EQ1)
     volume.commit()
 
     print("\nComputing quantitative results (Eq.1 only, D-scaling)...")
