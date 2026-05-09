@@ -152,10 +152,10 @@ MSE-only dominates on real word embeddings: +17pp (2-bit), +12pp (3-bit).
 
 At $d$=1536 (OpenAI embedding scale): MSE wins by +29pp (2-bit), +28pp (3-bit).
 
-### 4.5 Intuition: The Scatter Plot
+### 4.5 Intuition: The Density Plot
 
-![Score scatter](figures/fig3_scatter.png)
-*Single deployed index (one random seed), 2-bit, d=512. Left: MSE-only produces a tight cloud along a predictable shrinkage line ($\alpha$=0.883). Rankings are well-preserved. Right: TurboQuant centers on y=x (unbiased) but the cloud is far wider — more score pairs cross, causing rank inversions.*
+![Score density contour](figures/fig3_contour.png)
+*Single deployed index (one random seed), 2-bit, d=512. Left: MSE-only density concentrates tightly along the shrinkage line $\alpha$=0.883 (black dashed). The gray dotted y=x line shows the bias — but the narrow spread means rankings are preserved. Right: TurboQuant centers on y=x (unbiased) but the density is far wider — scores that are truly +0.05 could be estimated anywhere in [-0.03, +0.12], causing rank inversions.*
 
 ### 4.6 Score Accuracy (MAE)
 
